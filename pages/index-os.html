@@ -15,7 +15,6 @@
       background-color: #f9fafb;
     }
 
-    /* Estilização da barra de rolagem (opcional para ficar mais premium) */
     ::-webkit-scrollbar {
       width: 6px;
     }
@@ -52,13 +51,15 @@
       <div class="bg-gray-50 p-5 rounded-lg border border-gray-200 mb-6">
         <label for="telefone" class="block text-sm font-semibold text-gray-700 mb-2">Telefone de Busca</label>
         <div class="flex gap-3">
-          <input type="text" id="telefone" value="+55" placeholder="+5511999999999"
+          <input type="text" id="telefone" value="+55" placeholder="+55 11 99999-9999"
             class="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition-all font-mono text-lg" />
           <button id="btn-buscar" onclick="iniciarFluxoBusca()"
             class="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg font-semibold transition-colors flex items-center gap-2 disabled:opacity-50">
             <span id="btn-text">Buscar CRM</span>
           </button>
         </div>
+        <p class="text-xs text-gray-400 mt-2">Busca inteligente: pode digitar com ou sem o sinal de +, parênteses ou
+          traços.</p>
       </div>
 
       <div id="resultado-container" class="space-y-4"></div>
@@ -68,16 +69,10 @@
   </div>
 
   <script>
-    // Configurações do Domínio (para montar links)
-    let bitrixDomain = '';
-
     // ==========================================
     // 🛠️ FUNÇÕES CORE E ARQUITETURA DE API
     // ==========================================
 
-    /**
-     * Promisify para chamadas do Bitrix24 (Essencial para código Sênior)
-     */
     function apiCall(method, params = {}) {
       return new Promise((resolve, reject) => {
         BX24.callMethod(method, params, (res) => {
@@ -91,9 +86,6 @@
       });
     }
 
-    /**
-     * Auxiliar para pegar data de 90 dias atrás no formato ISO (para Filtro do Bitrix)
-     */
     function getData90DiasAtras() {
       const d = new Date();
       d.setDate(d.getDate() - 90);
@@ -105,10 +97,18 @@
     // ==========================================
 
     async function iniciarFluxoBusca() {
-      const telefone = document.getElementById('telefone').value.trim();
-      if (telefone.length < 8 || telefone === '+55') {
+      const telefoneInput = document.getElementById('telefone').value.trim();
+
+      // Sanitização Sênior do Telefone: Remove espaços, traços e parênteses
+      let telefoneLimpo = telefoneInput.replace(/[\s\-\(\)]/g, '');
+
+      if (telefoneLimpo.length < 8 || telefoneLimpo === '+55') {
         alert("Insira um telefone válido."); return;
       }
+
+      // Preparando as duas variantes para a API do Bitrix encontrar de qualquer jeito
+      let telefoneComMais = telefoneLimpo.startsWith('+') ? telefoneLimpo : '+' + telefoneLimpo;
+      let telefoneSemMais = telefoneLimpo.replace('+', '');
 
       // UI Reset
       const btn = document.getElementById('btn-buscar');
@@ -122,16 +122,14 @@
       statusMsg.textContent = "Analisando base de dados do CRM...";
       statusMsg.classList.remove('hidden');
 
-      console.log(`--- Iniciando Busca Lógica pelo Telefone: ${telefone} ---`);
+      console.log(`--- Iniciando Busca Lógica ---`);
+      console.log(`Variantes de Busca: [ "${telefoneComMais}", "${telefoneSemMais}" ]`);
 
       try {
-        bitrixDomain = 'https://' + BX24.getDomain(); // Para gerar os links dos Cards
-
         // 1. BUSCAR CONTATOS (entityTypeId: 3)
-        console.log("-> Passo 1: Buscando Contatos...");
         const resContatos = await apiCall('crm.item.list', {
           entityTypeId: 3,
-          filter: { 'phone': telefone } // Utilizando filtro direto no telefone
+          filter: { 'PHONE': [telefoneComMais, telefoneSemMais] } // Busca as duas variações de uma vez
         });
 
         const contatos = resContatos.items || [];
@@ -142,8 +140,7 @@
           for (const contato of contatos) {
             let htmlFilhos = '';
 
-            // 1.1 BUSCAR NEGÓCIOS EM ANDAMENTO VINCULADOS (entityTypeId: 2, status: P)
-            console.log(`-> Passo 1.1: Buscando Negócios para o Contato ID ${contato.id}`);
+            // 1.1 BUSCAR NEGÓCIOS EM ANDAMENTO VINCULADOS
             const resNegocios = await apiCall('crm.item.list', {
               entityTypeId: 2,
               filter: { 'contactId': contato.id, 'stageSemanticId': 'P' }
@@ -152,11 +149,9 @@
             const negocios = resNegocios.items || [];
 
             if (negocios.length > 0) {
-              console.log(`  Encontrado(s) ${negocios.length} Negócio(s).`);
               htmlFilhos = negocios.map(n => renderCardRow(n, 2, 'Negócio em Andamento', 'blue')).join('');
             } else {
-              // 1.1.2 BUSCAR LEADS VINCULADOS EM ANDAMENTO (entityTypeId: 1, status: P)
-              console.log(`  Nenhum negócio. Buscando Leads para o Contato ID ${contato.id}`);
+              // 1.1.2 BUSCAR LEADS VINCULADOS EM ANDAMENTO
               const resLeads = await apiCall('crm.item.list', {
                 entityTypeId: 1,
                 filter: { 'contactId': contato.id, 'stageSemanticId': 'P' }
@@ -164,53 +159,55 @@
 
               const leadsRepetidos = resLeads.items || [];
               if (leadsRepetidos.length > 0) {
-                console.log(`  Encontrado(s) ${leadsRepetidos.length} Lead(s) Vinculado(s).`);
                 htmlFilhos = leadsRepetidos.map(l => renderCardRow(l, 1, 'Lead Vinculado', 'purple')).join('');
               } else {
                 htmlFilhos = `<p class="text-xs text-gray-400 italic py-2">Nenhum Negócio ou Lead em andamento vinculado a este contato.</p>`;
               }
             }
-
-            // Renderiza o Pai (Contato) e os Filhos (Negócios ou Leads)
             container.innerHTML += renderParentCard(contato, 3, 'Contato Existente', htmlFilhos);
           }
 
         } else {
-          // 1.2 CONTATO NÃO ENCONTRADO -> BUSCAR LEADS NÃO REPETIDOS (entityTypeId: 1)
-          console.log("-> Passo 1.2: Nenhum contato. Buscando Leads soltos em andamento...");
-
+          // 1.2 NENHUM CONTATO -> BUSCAR LEADS SOLTOS EM ANDAMENTO
           let resLeadsSoltos = await apiCall('crm.item.list', {
             entityTypeId: 1,
-            filter: { 'phone': telefone, 'stageSemanticId': 'P' }
+            filter: {
+              'PHONE': [telefoneComMais, telefoneSemMais],
+              'stageSemanticId': 'P'
+            }
           });
 
           let leadsEncontrados = resLeadsSoltos.items || [];
 
           if (leadsEncontrados.length === 0) {
-            console.log("  Nenhum Lead em andamento. Buscando Leads Perdidos nos últimos 90 dias...");
+            // BUSCAR LEADS SOLTOS PERDIDOS NOS ÚLTIMOS 90 DIAS
             const dataFiltro = getData90DiasAtras();
-
             resLeadsSoltos = await apiCall('crm.item.list', {
               entityTypeId: 1,
               filter: {
-                'phone': telefone,
+                'PHONE': [telefoneComMais, telefoneSemMais],
                 'stageSemanticId': 'F',
-                '>=movedTime': dataFiltro // Data de modificação/movimentação para falha
+                '>=movedTime': dataFiltro
               }
             });
             leadsEncontrados = resLeadsSoltos.items || [];
           }
 
           if (leadsEncontrados.length > 0) {
-            console.log(`Encontrado(s) ${leadsEncontrados.length} Lead(s) sem contato vinculado.`);
             const htmlLeads = leadsEncontrados.map(l => renderParentCard(l, 1, 'Lead Solto', '')).join('');
             container.innerHTML += htmlLeads;
           } else {
-            console.log("Nenhum registro encontrado no sistema.");
             container.innerHTML = `
               <div class="bg-amber-50 border border-amber-200 p-6 rounded-lg text-center">
                 <p class="text-amber-800 font-medium">Nenhum Contato, Negócio ou Lead encontrado com este número.</p>
-                <p class="text-amber-600 text-sm mt-1">Neste ponto, podemos inserir um botão para Cadastrar Novo Cliente.</p>
+                <div class="mt-4 flex justify-center gap-3">
+                  <button class="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded font-medium text-sm transition-colors">
+                    + Cadastrar Novo Lead
+                  </button>
+                  <button class="bg-gray-800 hover:bg-gray-900 text-white px-4 py-2 rounded font-medium text-sm transition-colors">
+                    + Cadastrar Novo Contato
+                  </button>
+                </div>
               </div>`;
           }
         }
@@ -230,20 +227,30 @@
     // ==========================================
 
     /**
-     * Retorna a URL Absoluta do Card nativo do Bitrix24
+     * Retorna o PATH RELATIVO do Card nativo do Bitrix24
+     * (Obrigatório para abrir o Slider sem quebrar a janela)
      */
-    function getCardUrl(entityTypeId, id) {
+    function getCardRelativePath(entityTypeId, id) {
       const typeMap = { 1: 'lead', 2: 'deal', 3: 'contact', 4: 'company' };
       const entityStr = typeMap[entityTypeId] || 'deal';
-      return `${bitrixDomain}/crm/${entityStr}/details/${id}/`;
+      return `/crm/${entityStr}/details/${id}/`;
     }
+
+    // Função global acessível pelo onClick do HTML
+    window.abrirCardSlider = function (path) {
+      BX24.openPath(path, function (result) {
+        if (result && result.error) {
+          console.error("Erro ao abrir Slider:", result.error);
+        }
+      });
+    };
 
     /**
      * Renderiza o Card Principal (Contato ou Lead Solto)
      */
     function renderParentCard(item, typeId, badgeLabel, htmlFilhos) {
       const title = item.title || item.name || item.lastName || `Registro #${item.id}`;
-      const url = getCardUrl(typeId, item.id);
+      const path = getCardRelativePath(typeId, item.id);
 
       return `
         <div class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
@@ -252,9 +259,12 @@
               <span class="bg-gray-200 text-gray-700 text-xs font-bold px-2 py-1 rounded uppercase tracking-wider">${badgeLabel}</span>
               <span class="font-semibold text-gray-900 text-lg">${title}</span>
             </div>
-            <a href="javascript:void(0)" onclick="BX24.openPath('${url}')" class="text-blue-600 hover:text-blue-800 text-sm font-medium flex items-center gap-1">
-              Abrir Card <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
-            </a>
+            <button onclick="abrirCardSlider('${path}')" class="text-blue-600 hover:text-blue-800 text-sm font-medium flex items-center gap-1 bg-transparent border-none cursor-pointer">
+              Abrir Ficha 
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+            </button>
           </div>
           ${htmlFilhos ? `
             <div class="p-4 pl-12 bg-white">
@@ -269,11 +279,11 @@
     }
 
     /**
-     * Renderiza o Sub-Item (Negócio ou Lead Repetido) como "Tabela Dinâmica"
+     * Renderiza o Sub-Item (Negócio ou Lead Repetido)
      */
     function renderCardRow(item, typeId, typeLabel, color) {
       const title = item.title || `Sub-Registro #${item.id}`;
-      const url = getCardUrl(typeId, item.id);
+      const path = getCardRelativePath(typeId, item.id);
 
       return `
         <div class="flex items-center justify-between bg-gray-50 border border-gray-100 p-3 rounded hover:bg-gray-100 transition-colors">
@@ -282,7 +292,7 @@
             <span class="text-xs text-${color}-600 font-bold bg-${color}-100 px-2 py-0.5 rounded">${typeLabel}</span>
             <span class="text-sm font-medium text-gray-800">${title}</span>
           </div>
-          <button onclick="BX24.openPath('${url}')" class="text-xs text-gray-500 hover:text-gray-900 border border-gray-300 rounded px-3 py-1 bg-white">
+          <button onclick="abrirCardSlider('${path}')" class="text-xs text-gray-500 hover:text-gray-900 border border-gray-300 rounded px-3 py-1 bg-white cursor-pointer shadow-sm">
             Ver Detalhes
           </button>
         </div>
@@ -294,12 +304,15 @@
     // ==========================================
     BX24.init(function () {
       console.log('--- 🚀 APP INICIALIZADO: pages/index-os.html ---');
-      console.log('🔑 Objeto de Autenticação:', BX24.getAuth());
+      BX24.fitWindow(); // Garante que a altura do app respeite os elementos internos
     });
 
-    // Gatilho do Enter
+    // Gatilho do Enter com Prevenção de Submit Padrão
     document.getElementById('telefone').addEventListener('keypress', function (e) {
-      if (e.key === 'Enter') iniciarFluxoBusca();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        iniciarFluxoBusca();
+      }
     });
   </script>
 </body>
