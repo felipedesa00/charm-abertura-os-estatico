@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Abertura de Ordem de Serviço</title>
+
+  <script src="//api.bitrix24.com/api/v1/"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <style>
+    body {
+      overflow-x: hidden;
+      background-color: #f9fafb;
+    }
+
+    /* Estilização da barra de rolagem (opcional para ficar mais premium) */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+
+<body class="p-6 text-gray-800 font-sans antialiased">
+
+  <div class="max-w-4xl mx-auto bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+
+    <div class="bg-blue-700 px-6 py-4 flex items-center justify-between">
+      <div>
+        <h1 class="text-xl font-bold text-white flex items-center gap-2">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+          </svg>
+          Módulo de Ordem de Serviço
+        </h1>
+        <p class="text-blue-100 text-sm mt-1">Identificação do Cliente e Relacionamentos</p>
+      </div>
+    </div>
+
+    <div class="p-6">
+      <div class="bg-gray-50 p-5 rounded-lg border border-gray-200 mb-6">
+        <label for="telefone" class="block text-sm font-semibold text-gray-700 mb-2">Telefone de Busca</label>
+        <div class="flex gap-3">
+          <input type="text" id="telefone" value="+55" placeholder="+5511999999999"
+            class="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition-all font-mono text-lg" />
+          <button id="btn-buscar" onclick="iniciarFluxoBusca()"
+            class="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg font-semibold transition-colors flex items-center gap-2 disabled:opacity-50">
+            <span id="btn-text">Buscar CRM</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="resultado-container" class="space-y-4"></div>
+
+      <div id="status-msg" class="hidden text-center py-6 text-sm font-medium text-gray-500"></div>
+    </div>
+  </div>
+
+  <script>
+    // Configurações do Domínio (para montar links)
+    let bitrixDomain = '';
+
+    // ==========================================
+    // 🛠️ FUNÇÕES CORE E ARQUITETURA DE API
+    // ==========================================
+
+    /**
+     * Promisify para chamadas do Bitrix24 (Essencial para código Sênior)
+     */
+    function apiCall(method, params = {}) {
+      return new Promise((resolve, reject) => {
+        BX24.callMethod(method, params, (res) => {
+          if (res.error()) {
+            console.error(`[BX24 Error] Método: ${method}`, res.error());
+            reject(res.error());
+          } else {
+            resolve(res.data());
+          }
+        });
+      });
+    }
+
+    /**
+     * Auxiliar para pegar data de 90 dias atrás no formato ISO (para Filtro do Bitrix)
+     */
+    function getData90DiasAtras() {
+      const d = new Date();
+      d.setDate(d.getDate() - 90);
+      return d.toISOString();
+    }
+
+    // ==========================================
+    // 🧠 REGRA DE NEGÓCIO PRINCIPAL
+    // ==========================================
+
+    async function iniciarFluxoBusca() {
+      const telefone = document.getElementById('telefone').value.trim();
+      if (telefone.length < 8 || telefone === '+55') {
+        alert("Insira um telefone válido."); return;
+      }
+
+      // UI Reset
+      const btn = document.getElementById('btn-buscar');
+      const btnText = document.getElementById('btn-text');
+      const container = document.getElementById('resultado-container');
+      const statusMsg = document.getElementById('status-msg');
+
+      btn.disabled = true;
+      btnText.textContent = "Processando...";
+      container.innerHTML = '';
+      statusMsg.textContent = "Analisando base de dados do CRM...";
+      statusMsg.classList.remove('hidden');
+
+      console.log(`--- Iniciando Busca Lógica pelo Telefone: ${telefone} ---`);
+
+      try {
+        bitrixDomain = 'https://' + BX24.getDomain(); // Para gerar os links dos Cards
+
+        // 1. BUSCAR CONTATOS (entityTypeId: 3)
+        console.log("-> Passo 1: Buscando Contatos...");
+        const resContatos = await apiCall('crm.item.list', {
+          entityTypeId: 3,
+          filter: { 'phone': telefone } // Utilizando filtro direto no telefone
+        });
+
+        const contatos = resContatos.items || [];
+
+        if (contatos.length > 0) {
+          console.log(`Encontrado(s) ${contatos.length} contato(s). Processando sub-itens...`);
+
+          for (const contato of contatos) {
+            let htmlFilhos = '';
+
+            // 1.1 BUSCAR NEGÓCIOS EM ANDAMENTO VINCULADOS (entityTypeId: 2, status: P)
+            console.log(`-> Passo 1.1: Buscando Negócios para o Contato ID ${contato.id}`);
+            const resNegocios = await apiCall('crm.item.list', {
+              entityTypeId: 2,
+              filter: { 'contactId': contato.id, 'stageSemanticId': 'P' }
+            });
+
+            const negocios = resNegocios.items || [];
+
+            if (negocios.length > 0) {
+              console.log(`  Encontrado(s) ${negocios.length} Negócio(s).`);
+              htmlFilhos = negocios.map(n => renderCardRow(n, 2, 'Negócio em Andamento', 'blue')).join('');
+            } else {
+              // 1.1.2 BUSCAR LEADS VINCULADOS EM ANDAMENTO (entityTypeId: 1, status: P)
+              console.log(`  Nenhum negócio. Buscando Leads para o Contato ID ${contato.id}`);
+              const resLeads = await apiCall('crm.item.list', {
+                entityTypeId: 1,
+                filter: { 'contactId': contato.id, 'stageSemanticId': 'P' }
+              });
+
+              const leadsRepetidos = resLeads.items || [];
+              if (leadsRepetidos.length > 0) {
+                console.log(`  Encontrado(s) ${leadsRepetidos.length} Lead(s) Vinculado(s).`);
+                htmlFilhos = leadsRepetidos.map(l => renderCardRow(l, 1, 'Lead Vinculado', 'purple')).join('');
+              } else {
+                htmlFilhos = `<p class="text-xs text-gray-400 italic py-2">Nenhum Negócio ou Lead em andamento vinculado a este contato.</p>`;
+              }
+            }
+
+            // Renderiza o Pai (Contato) e os Filhos (Negócios ou Leads)
+            container.innerHTML += renderParentCard(contato, 3, 'Contato Existente', htmlFilhos);
+          }
+
+        } else {
+          // 1.2 CONTATO NÃO ENCONTRADO -> BUSCAR LEADS NÃO REPETIDOS (entityTypeId: 1)
+          console.log("-> Passo 1.2: Nenhum contato. Buscando Leads soltos em andamento...");
+
+          let resLeadsSoltos = await apiCall('crm.item.list', {
+            entityTypeId: 1,
+            filter: { 'phone': telefone, 'stageSemanticId': 'P' }
+          });
+
+          let leadsEncontrados = resLeadsSoltos.items || [];
+
+          if (leadsEncontrados.length === 0) {
+            console.log("  Nenhum Lead em andamento. Buscando Leads Perdidos nos últimos 90 dias...");
+            const dataFiltro = getData90DiasAtras();
+
+            resLeadsSoltos = await apiCall('crm.item.list', {
+              entityTypeId: 1,
+              filter: {
+                'phone': telefone,
+                'stageSemanticId': 'F',
+                '>=movedTime': dataFiltro // Data de modificação/movimentação para falha
+              }
+            });
+            leadsEncontrados = resLeadsSoltos.items || [];
+          }
+
+          if (leadsEncontrados.length > 0) {
+            console.log(`Encontrado(s) ${leadsEncontrados.length} Lead(s) sem contato vinculado.`);
+            const htmlLeads = leadsEncontrados.map(l => renderParentCard(l, 1, 'Lead Solto', '')).join('');
+            container.innerHTML += htmlLeads;
+          } else {
+            console.log("Nenhum registro encontrado no sistema.");
+            container.innerHTML = `
+              <div class="bg-amber-50 border border-amber-200 p-6 rounded-lg text-center">
+                <p class="text-amber-800 font-medium">Nenhum Contato, Negócio ou Lead encontrado com este número.</p>
+                <p class="text-amber-600 text-sm mt-1">Neste ponto, podemos inserir um botão para Cadastrar Novo Cliente.</p>
+              </div>`;
+          }
+        }
+
+      } catch (error) {
+        console.error("Erro Crítico no Fluxo de Busca:", error);
+        container.innerHTML = `<div class="bg-red-50 text-red-600 p-4 rounded border border-red-200">Falha ao buscar dados no CRM. Verifique o console. (F12)</div>`;
+      } finally {
+        statusMsg.classList.add('hidden');
+        btn.disabled = false;
+        btnText.textContent = "Buscar Novamente";
+      }
+    }
+
+    // ==========================================
+    // 🎨 UI RENDERERS (Tailwind)
+    // ==========================================
+
+    /**
+     * Retorna a URL Absoluta do Card nativo do Bitrix24
+     */
+    function getCardUrl(entityTypeId, id) {
+      const typeMap = { 1: 'lead', 2: 'deal', 3: 'contact', 4: 'company' };
+      const entityStr = typeMap[entityTypeId] || 'deal';
+      return `${bitrixDomain}/crm/${entityStr}/details/${id}/`;
+    }
+
+    /**
+     * Renderiza o Card Principal (Contato ou Lead Solto)
+     */
+    function renderParentCard(item, typeId, badgeLabel, htmlFilhos) {
+      const title = item.title || item.name || item.lastName || `Registro #${item.id}`;
+      const url = getCardUrl(typeId, item.id);
+
+      return `
+        <div class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+          <div class="p-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <span class="bg-gray-200 text-gray-700 text-xs font-bold px-2 py-1 rounded uppercase tracking-wider">${badgeLabel}</span>
+              <span class="font-semibold text-gray-900 text-lg">${title}</span>
+            </div>
+            <a href="javascript:void(0)" onclick="BX24.openPath('${url}')" class="text-blue-600 hover:text-blue-800 text-sm font-medium flex items-center gap-1">
+              Abrir Card <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+            </a>
+          </div>
+          ${htmlFilhos ? `
+            <div class="p-4 pl-12 bg-white">
+              <h4 class="text-xs text-gray-400 uppercase tracking-wider mb-3 font-semibold">Registros Vinculados em Andamento:</h4>
+              <div class="space-y-2 border-l-2 border-gray-100 pl-4">
+                ${htmlFilhos}
+              </div>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }
+
+    /**
+     * Renderiza o Sub-Item (Negócio ou Lead Repetido) como "Tabela Dinâmica"
+     */
+    function renderCardRow(item, typeId, typeLabel, color) {
+      const title = item.title || `Sub-Registro #${item.id}`;
+      const url = getCardUrl(typeId, item.id);
+
+      return `
+        <div class="flex items-center justify-between bg-gray-50 border border-gray-100 p-3 rounded hover:bg-gray-100 transition-colors">
+          <div class="flex items-center gap-3">
+            <span class="w-2 h-2 rounded-full bg-${color}-500"></span>
+            <span class="text-xs text-${color}-600 font-bold bg-${color}-100 px-2 py-0.5 rounded">${typeLabel}</span>
+            <span class="text-sm font-medium text-gray-800">${title}</span>
+          </div>
+          <button onclick="BX24.openPath('${url}')" class="text-xs text-gray-500 hover:text-gray-900 border border-gray-300 rounded px-3 py-1 bg-white">
+            Ver Detalhes
+          </button>
+        </div>
+      `;
+    }
+
+    // ==========================================
+    // 🚀 BOOTSTRAP DO APP
+    // ==========================================
+    BX24.init(function () {
+      console.log('--- 🚀 APP INICIALIZADO: pages/index-os.html ---');
+      console.log('🔑 Objeto de Autenticação:', BX24.getAuth());
+    });
+
+    // Gatilho do Enter
+    document.getElementById('telefone').addEventListener('keypress', function (e) {
+      if (e.key === 'Enter') iniciarFluxoBusca();
+    });
+  </script>
+</body>
+
+</html>
