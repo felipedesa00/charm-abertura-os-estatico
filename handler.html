@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Widget Handler</title>
+  <script src="//api.bitrix24.com/api/v1/"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f9fafb;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    .status {
+      font-size: 14px;
+      color: #6b7280;
+      text-align: center;
+    }
+    .spinner {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 2px solid #e5e7eb;
+      border-top-color: #2563eb;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-bottom: 8px;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .error {
+      color: #dc2626;
+      background: #fef2f2;
+      padding: 16px 24px;
+      border-radius: 8px;
+      border: 1px solid #fecaca;
+    }
+  </style>
+</head>
+<body>
+  <div class="status" id="status-container">
+    <div class="spinner"></div>
+    <p id="status-msg">Carregando...</p>
+  </div>
+
+  <!-- Form oculto para POST em URLs externas -->
+  <form id="external-form" method="POST" style="display:none;" target="_self">
+    <!-- Campos serao preenchidos dinamicamente -->
+  </form>
+
+  <script>
+    // Get path from URL query string
+    function getQueryParam(name) {
+      var urlParams = new URLSearchParams(window.location.search);
+      return urlParams.get(name);
+    }
+
+    var targetPath = getQueryParam('path') || '/crm/deal/';
+    var httpMethod = getQueryParam('method') || 'GET'; // GET (padrao) ou POST
+    var statusMsg = document.getElementById('status-msg');
+    var statusContainer = document.getElementById('status-container');
+    var externalForm = document.getElementById('external-form');
+
+    // Detecta se o path e uma URL externa (https://)
+    function isExternalUrl(path) {
+      return path.startsWith('http://') || path.startsWith('https://');
+    }
+
+    // Mostra erro na tela
+    function showError(msg) {
+      statusContainer.className = 'error';
+      statusContainer.innerHTML = '<p>' + msg + '</p>';
+      document.body.style.display = '';
+    }
+
+    // Monta objeto de payload com todos os dados do contexto Bitrix24
+    function buildPayload(auth, placementInfo, domain) {
+      var payload = {
+        access_token:      auth.access_token      || '',
+        refresh_token:     auth.refresh_token     || '',
+        expires_in:        auth.expires_in        || '',
+        member_id:         auth.member_id         || '',
+        domain:            domain,
+        placement:         placementInfo.placement || '',
+        placement_options: JSON.stringify(placementInfo.options || {})
+      };
+      // Expande cada opcao individualmente (ex: opt_ID, opt_ENTITY_TYPE_ID)
+      if (placementInfo.options) {
+        for (var key in placementInfo.options) {
+          if (placementInfo.options.hasOwnProperty(key)) {
+            payload['opt_' + key] = placementInfo.options[key];
+          }
+        }
+      }
+      return payload;
+    }
+
+    BX24.init(function() {
+      var auth         = BX24.getAuth()         || {};
+      var placementInfo = BX24.placement.info() || {};
+      var domain       = BX24.getDomain()       || '';
+
+      if (isExternalUrl(targetPath)) {
+        statusMsg.textContent = 'Redirecionando...';
+        document.body.style.display = 'none'; // oculta antes de redirecionar
+
+        var payload = buildPayload(auth, placementInfo, domain);
+
+        if (httpMethod === 'POST') {
+          // ── POST: envia dados no corpo via form submit ──────────────────
+          externalForm.method = 'POST';
+          externalForm.action = targetPath;
+          for (var param in payload) {
+            if (payload.hasOwnProperty(param)) {
+              var field = document.createElement('input');
+              field.type  = 'hidden';
+              field.name  = param;
+              field.value = payload[param];
+              externalForm.appendChild(field);
+            }
+          }
+          externalForm.submit();
+
+        } else {
+          // ── GET: monta query string e redireciona via location.href ─────
+          // Compativel com qualquer servidor sem configuracao extra
+          var base = targetPath.indexOf('?') !== -1 ? targetPath + '&' : targetPath + '?';
+          var parts = [];
+          for (var p in payload) {
+            if (payload.hasOwnProperty(p)) {
+              parts.push(encodeURIComponent(p) + '=' + encodeURIComponent(payload[p]));
+            }
+          }
+          location.href = base + parts.join('&');
+        }
+
+      } else {
+        // Caminho interno do Bitrix24: abre slider via openPath
+        BX24.openPath(targetPath, function(result) {
+          if (result && result.result === 'error') {
+            showError('Nao foi possivel abrir: ' + targetPath);
+          }
+        });
+        document.body.style.display = 'none';
+      }
+    });
+  </script>
+</body>
+</html>
