@@ -58,12 +58,11 @@
             <span id="btn-text">Buscar CRM</span>
           </button>
         </div>
-        <p class="text-xs text-gray-400 mt-2">Busca inteligente: pode digitar com ou sem o sinal de +, parênteses ou
-          traços.</p>
+        <p class="text-xs text-gray-400 mt-2">Busca inteligente: encontra independente de formatação ou código do país
+          (+).</p>
       </div>
 
       <div id="resultado-container" class="space-y-4"></div>
-
       <div id="status-msg" class="hidden text-center py-6 text-sm font-medium text-gray-500"></div>
     </div>
   </div>
@@ -98,19 +97,15 @@
 
     async function iniciarFluxoBusca() {
       const telefoneInput = document.getElementById('telefone').value.trim();
-
-      // Sanitização Sênior do Telefone: Remove espaços, traços e parênteses
       let telefoneLimpo = telefoneInput.replace(/[\s\-\(\)]/g, '');
 
       if (telefoneLimpo.length < 8 || telefoneLimpo === '+55') {
         alert("Insira um telefone válido."); return;
       }
 
-      // Preparando as duas variantes para a API do Bitrix encontrar de qualquer jeito
       let telefoneComMais = telefoneLimpo.startsWith('+') ? telefoneLimpo : '+' + telefoneLimpo;
       let telefoneSemMais = telefoneLimpo.replace('+', '');
 
-      // UI Reset
       const btn = document.getElementById('btn-buscar');
       const btnText = document.getElementById('btn-text');
       const container = document.getElementById('resultado-container');
@@ -122,20 +117,25 @@
       statusMsg.textContent = "Analisando base de dados do CRM...";
       statusMsg.classList.remove('hidden');
 
-      console.log(`--- Iniciando Busca Lógica ---`);
-      console.log(`Variantes de Busca: [ "${telefoneComMais}", "${telefoneSemMais}" ]`);
+      // Objeto de Filtro Reutilizável com a Lógica OR avançada
+      const filtroTelefoneOR = {
+        'LOGIC': 'OR',
+        '0': { '=phone': telefoneComMais },
+        '1': { '=phone': telefoneSemMais }
+      };
 
       try {
-        // 1. BUSCAR CONTATOS (entityTypeId: 3)
+        // 1. BUSCAR CONTATOS
         const resContatos = await apiCall('crm.item.list', {
           entityTypeId: 3,
-          filter: { 'PHONE': [telefoneComMais, telefoneSemMais] } // Busca as duas variações de uma vez
+          filter: {
+            '1': filtroTelefoneOR // Aplica a lógica OR
+          }
         });
 
         const contatos = resContatos.items || [];
 
         if (contatos.length > 0) {
-          console.log(`Encontrado(s) ${contatos.length} contato(s). Processando sub-itens...`);
 
           for (const contato of contatos) {
             let htmlFilhos = '';
@@ -172,8 +172,8 @@
           let resLeadsSoltos = await apiCall('crm.item.list', {
             entityTypeId: 1,
             filter: {
-              'PHONE': [telefoneComMais, telefoneSemMais],
-              'stageSemanticId': 'P'
+              'stageSemanticId': 'P',
+              '1': filtroTelefoneOR // Aplica a lógica OR junto com AND
             }
           });
 
@@ -182,14 +182,16 @@
           if (leadsEncontrados.length === 0) {
             // BUSCAR LEADS SOLTOS PERDIDOS NOS ÚLTIMOS 90 DIAS
             const dataFiltro = getData90DiasAtras();
+
             resLeadsSoltos = await apiCall('crm.item.list', {
               entityTypeId: 1,
               filter: {
-                'PHONE': [telefoneComMais, telefoneSemMais],
                 'stageSemanticId': 'F',
-                '>=movedTime': dataFiltro
+                '>=movedTime': dataFiltro,
+                '1': filtroTelefoneOR
               }
             });
+
             leadsEncontrados = resLeadsSoltos.items || [];
           }
 
@@ -226,17 +228,12 @@
     // 🎨 UI RENDERERS (Tailwind)
     // ==========================================
 
-    /**
-     * Retorna o PATH RELATIVO do Card nativo do Bitrix24
-     * (Obrigatório para abrir o Slider sem quebrar a janela)
-     */
     function getCardRelativePath(entityTypeId, id) {
       const typeMap = { 1: 'lead', 2: 'deal', 3: 'contact', 4: 'company' };
       const entityStr = typeMap[entityTypeId] || 'deal';
       return `/crm/${entityStr}/details/${id}/`;
     }
 
-    // Função global acessível pelo onClick do HTML
     window.abrirCardSlider = function (path) {
       BX24.openPath(path, function (result) {
         if (result && result.error) {
@@ -245,9 +242,6 @@
       });
     };
 
-    /**
-     * Renderiza o Card Principal (Contato ou Lead Solto)
-     */
     function renderParentCard(item, typeId, badgeLabel, htmlFilhos) {
       const title = item.title || item.name || item.lastName || `Registro #${item.id}`;
       const path = getCardRelativePath(typeId, item.id);
@@ -278,9 +272,6 @@
       `;
     }
 
-    /**
-     * Renderiza o Sub-Item (Negócio ou Lead Repetido)
-     */
     function renderCardRow(item, typeId, typeLabel, color) {
       const title = item.title || `Sub-Registro #${item.id}`;
       const path = getCardRelativePath(typeId, item.id);
@@ -304,10 +295,9 @@
     // ==========================================
     BX24.init(function () {
       console.log('--- 🚀 APP INICIALIZADO: pages/index-os.html ---');
-      BX24.fitWindow(); // Garante que a altura do app respeite os elementos internos
+      BX24.fitWindow();
     });
 
-    // Gatilho do Enter com Prevenção de Submit Padrão
     document.getElementById('telefone').addEventListener('keypress', function (e) {
       if (e.key === 'Enter') {
         e.preventDefault();
