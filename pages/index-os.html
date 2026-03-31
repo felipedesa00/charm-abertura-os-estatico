@@ -374,6 +374,7 @@
     // 🧠 FLUXO PRINCIPAL
     // ============================================================
     async function iniciarFluxoBusca() {
+      if (!bx24Ready) { alert('Aguarde — o aplicativo ainda está inicializando.'); return; }
       const tel = getTelefones();
       if (tel.semMais.length < 8) { alert('Insira um telefone válido (mínimo 8 dígitos).'); return; }
 
@@ -672,15 +673,58 @@
 
 
     // ============================================================
-    // 🚀 BOOTSTRAP — BX24.init (GitHub Pages iframe + ZIP local)
+    // 🚀 BOOTSTRAP — duplo modo de autenticação
     //
-    // Ambos os modos rodam dentro do iframe do Bitrix24, portanto
-    // o BX24.js consegue se comunicar com o frame pai e obtém
-    // autenticação OAuth 2.0 automaticamente — não é necessário
-    // injetar access_token manualmente nas chamadas REST.
+    // MODO 1 — GitHub Pages (redirect via handler.html):
+    //   O handler.html roda no iframe do Bitrix24, obtém auth via
+    //   BX24.getAuth() e redireciona para esta página passando os
+    //   tokens na query string. Após o redirect o BX24.js não
+    //   consegue mais inicializar (frame não reconhecido), então
+    //   as chamadas REST são feitas via fetch direto na API.
+    //
+    // MODO 2 — App ZIP local instalado no Bitrix24:
+    //   A página roda diretamente no iframe do Bitrix24.
+    //   BX24.init() funciona normalmente e BX24.callBatch é usado.
     // ============================================================
 
+    let bx24Auth  = null;
+    let bx24Ready = false;
+
+    // ── Serializa objeto aninhado em pares [chave, valor] ──
+    function serializeParams(obj, prefix) {
+      const parts = [];
+      for (const [k, v] of Object.entries(obj)) {
+        const key = prefix ? `${prefix}[${k}]` : k;
+        if (v !== null && v !== undefined && typeof v === 'object') {
+          parts.push(...serializeParams(v, key));
+        } else if (v !== null && v !== undefined) {
+          parts.push([key, String(v)]);
+        }
+      }
+      return parts;
+    }
+
+    // ── Fetch direto na REST API (modo URL) ──
+    async function fetchRest(method, params = {}) {
+      const body = new URLSearchParams();
+      body.append('auth', bx24Auth.access_token);
+      for (const [key, val] of serializeParams(params)) {
+        body.append(key, val);
+      }
+      const res = await fetch(`https://${bx24Auth.domain}/rest/${method}`, {
+        method: 'POST',
+        body,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      if (json.error) throw new Error(`${json.error}: ${json.error_description || ''}`);
+      return json.result;
+    }
+
     function apiCall(method, params = {}) {
+      if (bx24Auth?.source === 'url') {
+        return fetchRest(method, params);
+      }
       return new Promise((resolve, reject) => {
         BX24.callMethod(method, params, res => {
           if (res.error()) { console.error(`[BX24] ${method}`, res.error()); reject(res.error()); }
@@ -690,29 +734,65 @@
     }
 
     function apiBatch(calls) {
+      if (bx24Auth?.source === 'url') {
+        // Fetch paralelo — mais simples que construir o endpoint /rest/batch
+        return Promise.all(
+          Object.entries(calls).map(([k, call]) =>
+            fetchRest(call.method, call.params)
+              .then(data => [k, data])
+              .catch(err  => { console.error(`[fetch] ${k}:`, err); return [k, { items: [] }]; })
+          )
+        ).then(Object.fromEntries);
+      }
       return new Promise(resolve => {
         BX24.callBatch(calls, results => {
           const out = {};
           for (const k in results) {
-            out[k] = results[k].error() ? { items: [] } : results[k].data();
+            if (results[k].error()) {
+              console.error(`[BX24 batch] ${k}:`, results[k].error());
+              out[k] = { items: [] };
+            } else {
+              out[k] = results[k].data();
+            }
           }
           resolve(out);
         });
       });
     }
 
+    function getUrlParams() {
+      const p = new URLSearchParams(window.location.search);
+      return {
+        access_token: p.get('access_token'),
+        domain:       p.get('domain') || p.get('DOMAIN'),
+        member_id:    p.get('member_id'),
+      };
+    }
+
     function inicializarApp() {
-      const auth = BX24.getAuth();
-      console.log('🚀 index-os.html iniciado | domain:', auth?.domain);
-      console.log('   auth:', auth);
+      console.log('🚀 index-os.html | modo:', bx24Auth.source, '| domain:', bx24Auth.domain);
       try { BX24.fitWindow(); } catch(e) {}
     }
 
-    // Inicialização — funciona para GitHub Pages (iframe) e ZIP local
-    BX24.init(function () {
-      console.log('🔑 BX24 inicializado — auth automática via SDK');
+    // ── Detecta o modo de autenticação ──
+    const urlParams = getUrlParams();
+
+    if (urlParams.access_token && urlParams.domain) {
+      // MODO URL — veio via redirect do handler.html com tokens na query string
+      bx24Auth  = { ...urlParams, source: 'url' };
+      bx24Ready = true;
+      console.log('🔑 Modo URL — fetch direto na REST API');
       inicializarApp();
-    });
+
+    } else {
+      // MODO BX24 — app ZIP local, iframe reconhecido pelo Bitrix24
+      BX24.init(function () {
+        bx24Auth  = { ...(BX24.getAuth() || {}), domain: BX24.getDomain(), source: 'bx24' };
+        bx24Ready = true;
+        console.log('🔑 Modo BX24.init — auth via SDK | domain:', bx24Auth.domain);
+        inicializarApp();
+      });
+    }
 
   </script>
 </body>
