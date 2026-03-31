@@ -465,7 +465,13 @@
     }
 
     window.abrirSlider = function(path) {
-      BX24.openPath(path, r => { if (r?.error) console.error('Slider:', r.error); });
+      if (bx24Auth?.source === 'url') {
+        // Modo GitHub Pages: BX24.js não inicializado — navega diretamente no portal
+        window.top.location.href = `https://${bx24Auth.domain}${path}`;
+      } else {
+        // Modo ZIP local: usa o slider nativo do Bitrix24
+        BX24.openPath(path, r => { if (r?.error) console.error('Slider:', r.error); });
+      }
     };
 
     // Badge HTML helpers
