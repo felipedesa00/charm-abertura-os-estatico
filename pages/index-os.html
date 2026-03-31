@@ -281,29 +281,8 @@
 
 
     // ============================================================
-    // 🔧 API HELPERS
+    // 🔧 UTILS
     // ============================================================
-    function apiCall(method, params = {}) {
-      return new Promise((resolve, reject) => {
-        BX24.callMethod(method, params, res => {
-          if (res.error()) { console.error(`[BX24] ${method}`, res.error()); reject(res.error()); }
-          else resolve(res.data());
-        });
-      });
-    }
-
-    function apiBatch(calls) {
-      return new Promise(resolve => {
-        BX24.callBatch(calls, results => {
-          const out = {};
-          for (const k in results) {
-            out[k] = results[k].error() ? { items: [] } : results[k].data();
-          }
-          resolve(out);
-        });
-      });
-    }
-
     function getData90DiasAtras() {
       const d = new Date(); d.setDate(d.getDate() - 90); return d.toISOString();
     }
@@ -693,12 +672,99 @@
 
 
     // ============================================================
-    // 🚀 BOOTSTRAP
+    // 🚀 BOOTSTRAP — duplo modo de autenticação
+    //
+    // MODO 1 — App estático local (ZIP instalado no Bitrix):
+    //   O Bitrix carrega a página via iframe e o BX24.js injeta
+    //   os dados de auth automaticamente. BX24.init() inicializa.
+    //
+    // MODO 2 — GitHub Pages / handler externo via GET:
+    //   O widget do Bitrix abre a URL com os parâmetros na query
+    //   string: ?access_token=...&domain=...&placement=...
+    //   O BX24.js não consegue inicializar sozinho, então lemos
+    //   os dados diretamente da URL e os usamos nas chamadas API.
     // ============================================================
-    BX24.init(function () {
-      console.log('🚀 index-os.html iniciado');
-      BX24.fitWindow();
-    });
-  </script>
-</body>
-</html>
+
+    // Auth global — preenchido por um dos dois modos abaixo
+    let bx24Auth = null;
+
+    // Sobrescreve BX24.callMethod para injetar o token quando
+    // viermos do modo GET (BX24.js não tem auth nativo)
+    const _originalCallMethod = BX24.callMethod.bind(BX24);
+
+    function apiCall(method, params = {}) {
+      return new Promise((resolve, reject) => {
+        // Se temos auth do GET, injetamos o access_token manualmente
+        const authParams = (bx24Auth && bx24Auth.source === 'url')
+          ? { auth: bx24Auth.access_token }
+          : {};
+
+        BX24.callMethod(method, { ...authParams, ...params }, res => {
+          if (res.error()) { console.error(`[BX24] ${method}`, res.error()); reject(res.error()); }
+          else resolve(res.data());
+        });
+      });
+    }
+
+    function apiBatch(calls) {
+      return new Promise(resolve => {
+        // Injeta auth em cada chamada do batch se necessário
+        const callsComAuth = {};
+        for (const k in calls) {
+          const authParams = (bx24Auth && bx24Auth.source === 'url')
+            ? { auth: bx24Auth.access_token }
+            : {};
+          callsComAuth[k] = {
+            method: calls[k].method,
+            params: { ...authParams, ...calls[k].params }
+          };
+        }
+
+        BX24.callBatch(callsComAuth, results => {
+          const out = {};
+          for (const k in results) {
+            out[k] = results[k].error() ? { items: [] } : results[k].data();
+          }
+          resolve(out);
+        });
+      });
+    }
+
+    // Lê parâmetros da query string
+    function getUrlParams() {
+      const p = new URLSearchParams(window.location.search);
+      return {
+        access_token:      p.get('access_token'),
+        refresh_token:     p.get('refresh_token'),
+        expires_in:        p.get('expires_in'),
+        member_id:         p.get('member_id'),
+        domain:            p.get('domain') || p.get('DOMAIN'),
+        placement:         p.get('placement') || p.get('PLACEMENT'),
+        placement_options: p.get('placement_options') || p.get('PLACEMENT_OPTIONS'),
+      };
+    }
+
+    function inicializarApp() {
+      console.log('🚀 index-os.html iniciado | auth:', bx24Auth?.source);
+      console.log('   auth objeto:', bx24Auth);
+      try { BX24.fitWindow(); } catch(e) {}
+    }
+
+    // ── Detecta o modo de autenticação ──
+    const urlParams = getUrlParams();
+
+    if (urlParams.access_token) {
+      // MODO GET — parâmetros vieram pela URL (GitHub Pages / handler externo)
+      bx24Auth = { ...urlParams, source: 'url' };
+      console.log('🔑 Modo GET — auth via query string');
+      inicializarApp();
+
+    } else {
+      // MODO BX24.init — app estático local ou iframe Bitrix
+      BX24.init(function () {
+        const auth = BX24.getAuth() || {};
+        bx24Auth = { ...auth, source: 'bx24' };
+        console.log('🔑 Modo BX24.init — auth via SDK');
+        inicializarApp();
+      });
+    }
