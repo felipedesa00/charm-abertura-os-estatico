@@ -248,18 +248,18 @@
 
     function formatarVisual(digits) {
       if (!digits) return '';
-      if (digits.startsWith('55') && digits.length > 2) {
-        const ddd   = digits.slice(2, 4);
-        const resto = digits.slice(4);
-        let num = resto;
-        if (resto.length === 9) num = `${resto.slice(0,5)}-${resto.slice(5)}`;
-        else if (resto.length === 8) num = `${resto.slice(0,4)}-${resto.slice(4)}`;
-        if (!ddd)   return '+55';
-        if (!resto) return `+55 ${ddd}`;
-        return `+55 ${ddd} ${num}`;
-      }
-      return `+${digits}`;
+      if (!digits.startsWith('55')) digits = '55' + digits;
+      const ddd   = digits.slice(2, 4);
+      const resto = digits.slice(4);
+      let num = resto;
+      if (resto.length === 9) num = `${resto.slice(0,5)}-${resto.slice(5)}`;
+      else if (resto.length === 8) num = `${resto.slice(0,4)}-${resto.slice(4)}`;
+      if (!ddd)   return '+55';
+      if (!resto) return `+55 ${ddd}`;
+      return `+55 ${ddd} ${num}`;
     }
+
+    inputTelefone.value = '+55';
 
     inputTelefone.addEventListener('input', function () {
       this.value = formatarVisual(extrairDigitos(this.value));
